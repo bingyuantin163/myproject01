@@ -18,19 +18,74 @@ Swap:          2047         138        1909
 #available:可以使用的内存总量
 
 #Linux下内存buff/cache占用过多问题解决
-echo 1 > /proc/sys/vm/drop_caches
-echo 2 > /proc/sys/vm/drop_caches
+sync
+在执行这三条命令之前一定要先执行sync命令（描述：sync 命令运行 sync 子例程。如果必须停止系统，则运行sync 命令以确保文件系统的完整性。sync 命令将所有未写的系统缓冲区写到磁盘中，包含已修改的 i-Node、已延迟的块 I/O 和读写映射文件）
+
+echo 1 > /proc/sys/vm/drop_caches	# 表示清除pagecache
+echo 2 > /proc/sys/vm/drop_caches	# 表示清除回收slab分配器中的对象（包括目录项缓存和inode缓存）。slab分配器是内核中管理内存的一种机制，其中很多缓存数据实现都是用的pagecache。
+echo 3 > /proc/sys/vm/drop_caches	# 表示清除pagecache和slab分配器中的缓存对象
+```
+
+```sh
+#补充
+这里说下主要的情况：
+1.目前linux内核2.6之后支持：
+cache作为文件缓存可以自主在可用内存不足时自动释放
+但是释放前要对比cache中的文件和磁盘中是否一致
+会暂时增加IO
+
+2.不能释放的情况（如图）
+cache不能被回收情况：
+ /dev/shm 的tmpfs目录，是被当做文件系统使用
+ 里面存放东西占用内存，不能释放，但是实际我们这边基本没有占用
+shared不能回收情况：
+主要用于共建内存，进程间通信
+shmget 方式申请的共享内存会占用 cache 空间，不能被回收
+但是显然我们这边占用也很少
+
+3.如果实在不想让内存不够时候自动释放
+sync
+echo 1 > /proc/sys/vm/drop_caches	
+echo 2 > /proc/sys/vm/drop_caches	
 echo 3 > /proc/sys/vm/drop_caches
+就用这个写个脚本，计划任务去执行
+定期清除，避免内存不够用时候，自动释放造成磁盘IO过高
+
+4.所以我的理解是咱们这个cache占用不存在多大问题
+
+5.不过你最好让ethan看下，大神肯定知道的详细，其他解决方案什么的	
 ```
 
 ##### 1.2buffer和cached被合成一组，加入了一个available，关于此available，英文你文档说明如下
 
 ```sh
-	1.MemAvailable: An estimate of how much memory is available for starting new applications,       without swapping.
-	2.即系统可用内存，之前说过由于buffer和cache可以在需要时被释放回收，系统可用内存即 free + buffer + cache，在CentOS7之后这种说法并不准确，因为并不是所有的buffer/cache空间都可以被回收。
-	3.即available = free + buffer/cache - 不可被回收内存(共享内存段、tmpfs、ramfs等)。
-	4.因此在CentOS7之后，用户不需要去计算buffer/cache，直接看available 即可以看到还有多少内存可用，更加简单直观
-	5.
+1.MemAvailable: An estimate of how much memory is available for starting new applications,       without swapping.
+2.即系统可用内存，之前说过由于buffer和cache可以在需要时被释放回收，系统可用内存即 free + buffer + cache，在CentOS7之后这种说法并不准确，因为并不是所有的buffer/cache空间都可以被回收。
+3.即available = free + buffer/cache - 不可被回收内存(共享内存段、tmpfs、ramfs等)。
+4.因此在CentOS7之后，用户不需要去计算buffer/cache，直接看available 即可以看到还有多少内存可用，更加简单直观
+5.buffer 和 cache 是两个在计算机技术中被用滥的名词，放在不同语境下会有不同的意义。在 Linux 的内存管理中，
+  这里的buffer 指 Linux 内存的：Buffer cache。这里的 cache 指 Linux 内存中的：Page cache。翻译成中文
+  可以叫做缓冲区缓存和页面缓存。在历史上，它们一个（buffer）被用来当成对 io 设备写的缓存，而另一个（cache）
+  被用来当作对 io 设备的读缓存，这里的 io 设备，主要指的是块设备文件和文件系统上的普通文件。但是现在，它们的
+  意义已经不一样了。在当前的内核中，page cache 顾名思义就是针对内存页的缓存，说白了就是，如果有内存是以 page
+  进行分配管理的，都可以使用 page cache 作为其缓存来管理使用。当然，不是所有的内存都是以页page进行管理的，也有
+  很多是针对块block进行管理的，这部分内存使用如果要用到 cache 功能，则都集中到 buffer cache 中来使用。（从这
+  个角度出发，是不是 buffer cache 改名叫做 block cache 更好？）然而，也不是所有块block都有固定长度，系统上块
+  的长度主要是根据所使用的块设备决定的，而页长度在 X86 上无论是32位还是64位都是 4k
+```
+
+##### page cache
+
+```sh
+Page cache 主要用来作为文件系统上的文件数据的缓存来用，尤其是针对当进程对文件有 read／write 操作的时候。如果你仔
+细想想的话，作为可以映射文件到内存的系统调用：mmap 是不是很自然的也应该用到 page cache？在当前的系统实现里， page
+cache 也被作为其它文件类型的缓存设备来用，所以事实上 page cache 也负责了大部分的块设备文件的缓存工作
+```
+
+##### buffer cache
+
+```sh
+
 ```
 
 ##### 1.3推荐命令
